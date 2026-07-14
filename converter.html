@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<title>ממיר אקסלים - ארג'נטו</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 900px; margin: 30px auto; padding: 0 16px; background:#f7f7f8; }
+  h1 { font-size: 20px; }
+  .box { background:#fff; border:1px solid #ddd; border-radius:8px; padding:16px; margin-bottom:16px; }
+  button { background:#1b73e8; color:#fff; border:none; padding:10px 18px; border-radius:6px; font-size:14px; cursor:pointer; }
+  button:disabled { background:#aaa; cursor:not-allowed; }
+  button.secondary { background:#444; }
+  textarea { width:100%; height:320px; font-family: monospace; font-size:12px; direction:ltr; text-align:left; }
+  .summary span { display:inline-block; margin-inline-end:18px; font-weight:bold; }
+  .files-list { font-size:13px; color:#555; }
+  .flag { color:#b30000; }
+  .hint { font-size:12px; color:#666; margin-top:6px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useMemo } = React;
+
+// קבועים פנימיים שנגזרים ישירות מקוד ה-ARG של הספק (לא ניתנים לעריכה - אלה לא ערכים "עיצוביים")
+const LETTER_TO_KEY = { E: "earrings", N: "necklaces", B: "bracelets", R: "rings" };
+const PLATING_DIGIT_TO_KEY = { "1": "rh", "2": "gold", "3": "rose" };
+const STONE_DIGIT_TO_KEY = { "0": "plain", "1": "white", "2": "blue", "3": "green", "4": "black", "6": "red", "7": "aqua", "8": "pink" };
+
+// המילון הבא כן ניתן לעריכה מלאה בממשק (תיבת הטקסט) - אפשר להוסיף/לשנות כל ערך וגם להוסיף עוד אפשרויות
+// לכל אחת מהרשימות (categories/subcategories/subsubcategories/stone_shapes/shapes/...) - הן ישמשו כרשימת
+// הבחירה (dropdown) בקובץ הפלט.
+const DEFAULT_TRANSLATIONS = {
+  base_types: {
+    "earring": "עגיל",
+    "stud earring": "עגיל צמיד",
+    "ear cuff": "עגיל צמוד",
+    "necklace": "שרשרת",
+    "long necklace": "שרשרת ארוכה",
+    "choker": "שרשרת צוואר",
+    "bracelet": "צמיד",
+    "hand bracelet": "צמיד יד",
+    "bangle": "צמיד ריגלי",
+    "ring": "טבעת"
+  },
+  // רמה 1: קטגוריה עליונה - חובה שם מדויק בהתאם לעץ הקטגוריות בחנות
+  categories: {
+    "earrings": "כל העגילים",
+    "necklaces": "כל השרשראות",
+    "bracelets": "כל הצמידים",
+    "rings": "כל הטבעות"
+  },
+  // רמה 2: צבע מתכת (נגזר מ-plating בקוד ARG)
+  materials: {
+    "rh": "כסף",
+    "gold": "זהב",
+    "rose": "רוזגולד"
+  },
+  // צבע האבן (נגזר מהספרה בקוד ARG)
+  stone_colors: {
+    "plain": "ללא אבן",
+    "white": "לבן",
+    "blue": "כחול",
+    "green": "ירוק",
+    "black": "שחור",
+    "red": "אדום",
+    "aqua": "טורקיז",
+    "pink": "פינק"
+  },
+  // רמה 3: תת-קטגוריה - אפשר להוסיף כל ערך חדש שמתגלה
+  subcategories: [
+    "טבעות קלאסיות", "טבעת זרת", "טבעת חותם", "טבעת שורה", "טבעת לאירוע", "טבעת ללא שיבוץ",
+    "צמיד קשיח-בנגל", "צמיד לרגל", "צמיד טניס", "צמיד עדין", "צמיד אלמנט", "צמיד לאירוע", "צמיד חוליות",
+    "שרשרת עניבה", "שרשרת טניס", "שרשרת צ'וקר", "שרשרת תליון", "שרשרת קשיחה", "שרשרת אלמנטים",
+    "עגיל צמוד", "עגיל ארוך", "עגיל 2 חורים", "עגיל תלוי", "חישוקים", "עגיל מטפס", "פירסינג", "תוספות לעגילים"
+  ],
+  // רמה 4: תת-תת-קטגוריה - אפשר להוסיף כל ערך חדש שמתגלה
+  subsubcategories: [
+    "שורה", "אלמנט", "ללא שיבוץ", "שיבוץ לבן", "שיבוץ שחור",
+    "הליקס", "טרגוס", "סוגר עם אלמנט", "סוגר עם שרשרת",
+    "XL", "L", "M", "S", "XS", "Y"
+  ],
+  // צורת האבן (לא צורת התכשיט הכללית)
+  stone_shapes: {
+    "round": "עגולה",
+    "marquise": "מרקיזה",
+    "mariquesa": "מרקיזה",
+    "oval": "אובלית",
+    "drop": "טיפה",
+    "heart": "לב",
+    "rectangle": "מלבן"
+  },
+  // צורת התכשיט/תליון הכללית
+  shapes: {
+    "solitaire": "סוליטר",
+    "butterfly": "פרפר",
+    "heart": "לב",
+    "lotus": "לוטוס",
+    "star of david": "מגן דוד",
+    "hamsa": "חמסה",
+    "fish": "דגים",
+    "letter": "אותיות",
+    "chai": "חי",
+    "eye": "עין",
+    "drop": "טיפה"
+  }
+};
+
+const CODE_RE = /^(\*)?([A-Z]+)(\d+)-(\d+)-(\d+)-(.+)$/;
+const CI_RE = /CI-(\d+)/i;
+const MM_SIZE_RE = /\d+(\.\d+)?(\s*[*x×]\s*\d+(\.\d+)?)?\s*mm/i;
+
+function isRowEmpty(row) {
+  return row.every((c) => String(c ?? "").trim() === "");
+}
+
+function findKeyByMatch(dict, needleLower) {
+  return Object.keys(dict || {}).find((k) => needleLower.includes(k.toLowerCase()));
+}
+
+function parseWorkbookFile(file, arrayBuffer, translations) {
+  const wb = XLSX.read(arrayBuffer, { type: "array" });
+  const ciMatch = file.name.match(CI_RE);
+  const ciNumber = ciMatch ? ciMatch[1] : "";
+  const parsed = [];
+  const errors = [];
+
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+    // Row 0 = title row, Row 1 = header row, data starts at index 2
+    for (let i = 2; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r || isRowEmpty(r)) continue;
+
+      const supplierNo = r[0];
+      const codeRaw = String(r[1] ?? "").trim();
+      const description = String(r[3] ?? "").trim();
+      const quantity = r[4];
+      const tagPrice = r[6];
+      const platingText = String(r[7] ?? "").trim();
+      const remark = String(r[8] ?? "").trim();
+      const sourceRow = i + 1;
+
+      if (!codeRaw) continue; // spacer row with no code
+
+      const m = codeRaw.match(CODE_RE);
+      if (!m) {
+        errors.push({
+          source_file: file.name,
+          source_sheet: sheetName,
+          source_row: sourceRow,
+          arg_code_raw: codeRaw,
+          reason: "קוד ARG לא תואם לפורמט הצפוי (חסרה ספרה / מקף כפול / תבנית לא מוכרת)"
+        });
+        continue;
+      }
+
+      const [, star, letter, baseSku, platingDigit, stoneDigit, sizeCode] = m;
+      const isNew = star ? "חדש" : "רגיל";
+
+      const categoryKey = LETTER_TO_KEY[letter] || "";
+      const category = translations.categories?.[categoryKey] || categoryKey;
+
+      const materialKey = PLATING_DIGIT_TO_KEY[platingDigit] || "";
+      const material = translations.materials?.[materialKey] || materialKey;
+
+      const stoneKeyKnown = Object.prototype.hasOwnProperty.call(STONE_DIGIT_TO_KEY, stoneDigit);
+      const stoneKey = stoneKeyKnown ? STONE_DIGIT_TO_KEY[stoneDigit] : "";
+      const stoneColor = stoneKeyKnown ? (translations.stone_colors?.[stoneKey] || stoneKey) : stoneDigit;
+
+      const descLines = description.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      const baseEn = (descLines[0] || "").toLowerCase();
+      const subcategoryRaw = descLines.slice(1).join(" | ");
+
+      let baseHe = "";
+      let hasTranslation = !baseEn;
+      if (baseEn) {
+        const key = Object.keys(translations.base_types || {}).find((k) => k.toLowerCase() === baseEn);
+        if (key) {
+          baseHe = translations.base_types[key];
+          hasTranslation = true;
+        }
+      }
+
+      // מידה = מהקוד (מידת טבעת/צמיד), אם אין (A) - נשאר ריק
+      const sizeDisplay = sizeCode.toUpperCase() !== "A" ? sizeCode : "";
+
+      // גודל אבן (מ"מ) = טקסט עם mm בתיאור, למשל "9mm" / "5*19mm"
+      const isMmSize = subcategoryRaw && MM_SIZE_RE.test(subcategoryRaw);
+      const stoneSizeDisplay = isMmSize ? subcategoryRaw : "";
+
+      // צורה: מנסים להתאים רק אם זה לא טקסט מידה
+      const canAttemptShape = subcategoryRaw && !isMmSize && !/^\d+$/.test(subcategoryRaw);
+      let stoneShapeHe = "";
+      let shapeHe = "";
+      let stoneShapeFound = false;
+      let shapeFound = false;
+      if (canAttemptShape) {
+        const lowerSub = subcategoryRaw.toLowerCase();
+        const stoneShapeKey = findKeyByMatch(translations.stone_shapes, lowerSub);
+        if (stoneShapeKey) {
+          stoneShapeHe = translations.stone_shapes[stoneShapeKey];
+          stoneShapeFound = true;
+        }
+        const shapeKey = findKeyByMatch(translations.shapes, lowerSub);
+        if (shapeKey) {
+          shapeHe = translations.shapes[shapeKey];
+          shapeFound = true;
+        }
+      }
+
+      const flagReasons = [];
+      if (!stoneKeyKnown) flagReasons.push(`ספרת אבן ${stoneDigit} לא ברשימה הידועה`);
+      if (baseEn && !hasTranslation) flagReasons.push(`אין תרגום ל-"${baseEn}"`);
+      if (canAttemptShape && !stoneShapeFound && !shapeFound) {
+        flagReasons.push(`לא נמצאה התאמת צורה עבור "${subcategoryRaw}"`);
+      }
+
+      parsed.push({
+        source_file: file.name,
+        ci_number: ciNumber,
+        source_sheet: sheetName,
+        source_row: sourceRow,
+        supplier_no: supplierNo,
+        arg_code_raw: codeRaw,
+        is_new: isNew,
+        category,
+        base_sku: baseSku,
+        material,
+        stone_color: stoneColor,
+        stone_size: stoneSizeDisplay,
+        size_display: sizeDisplay,
+        description_base_he: baseHe || baseEn,
+        stone_shape_he: stoneShapeHe,
+        shape_he: shapeHe,
+        subcategory_raw: subcategoryRaw,
+        quantity,
+        tag_price: tagPrice,
+        remark: remark || platingText,
+        needs_review: flagReasons.length > 0 ? "כן" : "",
+        flag_reason: flagReasons.join(" ; ")
+      });
+    }
+  }
+
+  return { parsed, errors };
+}
+
+function setListDataValidation(ws, colIdx, rowCount, listRangeRef) {
+  for (let r = 2; r <= rowCount + 1; r++) {
+    ws.getCell(r, colIdx).dataValidation = {
+      type: "list",
+      allowBlank: true,
+      formulae: [listRangeRef]
+    };
+  }
+}
+
+async function buildWorkbook(allParsed, allErrors, translations) {
+  const wb = new ExcelJS.Workbook();
+
+  const listGroups = [
+    { key: "A", values: Object.values(translations.categories || {}) },
+    { key: "B", values: translations.subcategories || [] },
+    { key: "C", values: translations.subsubcategories || [] },
+    { key: "D", values: Object.values(translations.materials || {}) },
+    { key: "E", values: Object.values(translations.stone_colors || {}) },
+    { key: "F", values: Object.values(translations.stone_shapes || {}) },
+    { key: "G", values: Object.values(translations.shapes || {}) }
+  ];
+
+  const wsLists = wb.addWorksheet("Lists");
+  wsLists.state = "hidden";
+  listGroups.forEach(({ key, values }) => {
+    values.forEach((v, idx) => (wsLists.getCell(`${key}${idx + 1}`).value = v));
+  });
+  const rangeFor = (key) => {
+    const group = listGroups.find((g) => g.key === key);
+    const len = Math.max(group.values.length, 1);
+    return `Lists!$${key}$1:$${key}$${len}`;
+  };
+
+  const wsVariants = wb.addWorksheet("Variants");
+  wsVariants.views = [{ rightToLeft: true }];
+  const variantCols = [
+    ["arg_code_raw", "קוד ARG"],
+    ["is_new", "תג"],
+    ["category", "קטגוריה"],
+    ["base_sku", "מספר בסיס"],
+    ["material", "צבע מתכת"],
+    ["stone_color", "צבע אבן"],
+    ["stone_size", "גודל אבן (מ\"מ)"],
+    ["size_display", "מידה"],
+    ["description_base_he", "סוג בסיס (עברית)"],
+    ["stone_shape_he", "צורת אבן"],
+    ["shape_he", "צורה"],
+    ["subcategory_final", "תת-קטגוריה"],
+    ["subsubcategory_final", "תת-תת-קטגוריה"],
+    ["quantity", "כמות"],
+    ["tag_price", "מחיר"],
+    ["remark", "הערה"],
+    ["needs_review", "לבדיקה"]
+  ];
+  wsVariants.addRow(variantCols.map((c) => c[1]));
+  const emptyByDefault = new Set(["subcategory_final", "subsubcategory_final"]);
+  allParsed.forEach((row) => {
+    wsVariants.addRow(variantCols.map(([key]) => (emptyByDefault.has(key) ? "" : row[key] ?? "")));
+  });
+
+  const colIdx = (key) => variantCols.findIndex((c) => c[0] === key) + 1;
+  setListDataValidation(wsVariants, colIdx("category"), allParsed.length, rangeFor("A"));
+  setListDataValidation(wsVariants, colIdx("subcategory_final"), allParsed.length, rangeFor("B"));
+  setListDataValidation(wsVariants, colIdx("subsubcategory_final"), allParsed.length, rangeFor("C"));
+  setListDataValidation(wsVariants, colIdx("material"), allParsed.length, rangeFor("D"));
+  setListDataValidation(wsVariants, colIdx("stone_color"), allParsed.length, rangeFor("E"));
+  setListDataValidation(wsVariants, colIdx("stone_shape_he"), allParsed.length, rangeFor("F"));
+  setListDataValidation(wsVariants, colIdx("shape_he"), allParsed.length, rangeFor("G"));
+  wsVariants.columns.forEach((col) => (col.width = 16));
+
+  const wsSource = wb.addWorksheet("מקור");
+  wsSource.views = [{ rightToLeft: true }];
+  const sourceCols = [
+    ["source_file", "קובץ מקור"],
+    ["ci_number", "מספר CI"],
+    ["source_sheet", "Sheet מקור"],
+    ["source_row", "שורה במקור"],
+    ["supplier_no", "מספר ספק (No.)"],
+    ["arg_code_raw", "קוד ARG"]
+  ];
+  wsSource.addRow(sourceCols.map((c) => c[1]));
+  allParsed.forEach((row) => {
+    wsSource.addRow(sourceCols.map(([key]) => row[key] ?? ""));
+  });
+  wsSource.columns.forEach((col) => (col.width = 18));
+
+  const wsErrors = wb.addWorksheet("Errors");
+  wsErrors.views = [{ rightToLeft: true }];
+  const errorCols = [
+    ["source_file", "קובץ מקור"],
+    ["source_sheet", "Sheet מקור"],
+    ["source_row", "שורה במקור"],
+    ["arg_code_raw", "קוד ARG"],
+    ["reason", "סיבה"]
+  ];
+  wsErrors.addRow(errorCols.map((c) => c[1]));
+  allErrors.forEach((row) => {
+    wsErrors.addRow(errorCols.map(([key]) => row[key] ?? ""));
+  });
+  wsErrors.columns.forEach((col) => (col.width = 22));
+
+  const wsFlags = wb.addWorksheet("Flags");
+  wsFlags.views = [{ rightToLeft: true }];
+  const flagCols = [
+    ["arg_code_raw", "קוד ARG"],
+    ["category", "קטגוריה"],
+    ["stone_color", "צבע אבן"],
+    ["description_base_he", "סוג בסיס"],
+    ["subcategory_raw", "תת-סוג גולמי (מקור)"],
+    ["flag_reason", "סיבת דגל"],
+    ["source_file", "קובץ מקור"],
+    ["source_row", "שורה במקור"]
+  ];
+  wsFlags.addRow(flagCols.map((c) => c[1]));
+  allParsed.filter((r) => r.needs_review === "כן").forEach((row) => {
+    wsFlags.addRow(flagCols.map(([key]) => row[key] ?? ""));
+  });
+  wsFlags.columns.forEach((col) => (col.width = 22));
+
+  return wb;
+}
+
+function App() {
+  const [files, setFiles] = useState([]);
+  const [translationsText, setTranslationsText] = useState(
+    JSON.stringify(DEFAULT_TRANSLATIONS, null, 2)
+  );
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+  const [running, setRunning] = useState(false);
+
+  const translations = useMemo(() => {
+    try {
+      return JSON.parse(translationsText);
+    } catch (e) {
+      return null;
+    }
+  }, [translationsText]);
+
+  async function handleRun() {
+    setError("");
+    setResult(null);
+    if (!files.length) {
+      setError("יש לבחור קובץ אקסל אחד או יותר.");
+      return;
+    }
+    if (!translations) {
+      setError("מילון התרגום אינו JSON תקין.");
+      return;
+    }
+    setRunning(true);
+    try {
+      let allParsed = [];
+      let allErrors = [];
+      for (const file of files) {
+        const buf = await file.arrayBuffer();
+        const { parsed, errors } = parseWorkbookFile(file, buf, translations);
+        allParsed = allParsed.concat(parsed);
+        allErrors = allErrors.concat(errors);
+      }
+      const wb = await buildWorkbook(allParsed, allErrors, translations);
+      const buffer = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buffer], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const flaggedCount = allParsed.filter((v) => v.needs_review === "כן").length;
+      setResult({
+        url,
+        total: allParsed.length,
+        errors: allErrors.length,
+        flagged: flaggedCount
+      });
+    } catch (e) {
+      setError("שגיאה בעיבוד הקבצים: " + e.message);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div>
+      <h1>ממיר אקסלים - ספק ארג'נטו → קובץ וריאנטים מאוחד</h1>
+
+      <div className="box">
+        <h3>1. בחירת קבצי אקסל של הספק</h3>
+        <input
+          type="file"
+          multiple
+          accept=".xls,.xlsx"
+          onChange={(e) => setFiles(Array.from(e.target.files))}
+        />
+        <div className="files-list">
+          {files.length > 0 && (
+            <ul>
+              {files.map((f, i) => (
+                <li key={i}>{f.name}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      <div className="box">
+        <h3>2. מילון תרגום וקטגוריות (אפשר לערוך/להוסיף ערכים)</h3>
+        <p className="hint">
+          כל הרשימות כאן (categories / subcategories / subsubcategories / materials / stone_colors /
+          stone_shapes / shapes) הופכות לרשימות הבחירה (dropdown) בקובץ הפלט. אפשר להוסיף כל ערך חדש
+          שמתגלה - פשוט להוסיף שורה/מפתח נוסף לרשימה המתאימה.
+        </p>
+        <textarea
+          value={translationsText}
+          onChange={(e) => setTranslationsText(e.target.value)}
+        />
+        {!translations && <div className="flag">JSON לא תקין</div>}
+      </div>
+
+      <div className="box">
+        <h3>3. הרצה והורדה</h3>
+        <button onClick={handleRun} disabled={running}>
+          {running ? "מעבד..." : "הרץ המרה"}
+        </button>
+        {error && <p className="flag">{error}</p>}
+        {result && (
+          <div style={{ marginTop: 12 }}>
+            <div className="summary">
+              <span>סה"כ שורות תקינות: {result.total}</span>
+              <span>שגיאות: {result.errors}</span>
+              <span>דגלים לבדיקה: {result.flagged}</span>
+            </div>
+            <a href={result.url} download="argento-variants-merged.xlsx">
+              <button className="secondary">הורד קובץ מאוחד</button>
+            </a>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
